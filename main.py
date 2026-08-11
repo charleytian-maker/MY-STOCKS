@@ -204,14 +204,20 @@ def get_stock_pool():
         return f"### ⭐️ 3. 今日精选策略股票池\n> 选股失败: {e}\n"
 
 
-# ================= 4. 输出至 Summary =================
+# ================= 4. 输出至控制台日志与 Summary =================
 def send_notification(title, markdown_content):
+    # 1. 重点：直接打印到控制台日志，方便在 Run Script 界面直接阅读
+    print("\n" + "=" * 50)
+    print(f"       {title}")
+    print("=" * 50 + "\n")
+    print(markdown_content)
+    print("=" * 50 + "\n")
+
+    # 2. 保留 Summary 写入逻辑
     summary_path = os.getenv("GITHUB_STEP_SUMMARY")
     if summary_path:
         with open(summary_path, "a", encoding="utf-8") as f:
             f.write(f"# {title}\n\n" + markdown_content)
-    else:
-        print(f"=== {title} ===\n{markdown_content}")
 
 
 if __name__ == "__main__":
