@@ -1,15 +1,31 @@
 import os
-import requests
-import smtplib
-from email.mime.text import MIMEText
+import time
 import akshare as ak
 import pandas as pd
 
 
-# ================= 1. 大盘环境诊断 =================
+# 增加失败重试功能的辅助函数
+def safe_fetch(ak_func, **kwargs):
+    retries = 3  # 最多重试3次
+    for i in range(retries):
+        try:
+            return ak_func(**kwargs)
+        except Exception as e:
+            if i == retries - 1: # 最后一次尝试
+                raise e
+            print(f"网络异常，{1}秒后重试...")
+            time.sleep(1) # 延时1秒
+    return None
+
+
+# ================= 1. 大盘环境诊断 (增加重试) =================
 def get_market_report():
     try:
-        df_index = ak.stock_zh_index_spot_em()
+        # 使用安全获取函数
+        df_index = safe_fetch(ak.stock_zh_index_spot_em)
+        if df_index is None:
+            return "### 📊 1. 每日大盘诊断\n> 数据获取为空\n"
+
         sh_idx = df_index[df_index["名称"] == "上证指数"].iloc[0]
         sz_idx = df_index[df_index["名称"] == "深证成指"].iloc[0]
         cy_idx = df_index[df_index["名称"] == "创业板指"].iloc[0]
@@ -32,27 +48,29 @@ def get_market_report():
         )
         return report
     except Exception as e:
-        return f"### 📊 1. 每日大盘诊断\n> 获取失败: {e}\n"
+        return f"### 📊 1. 每日大盘诊断\n> 获取失败: 网络连接异常或数据接口不可用\n"
 
 
-# 兼容获取历史数据（自动识别 A股 与 ETF）
+# 兼容获取历史数据 (自动识别 A股 与 ETF，增加重试)
 def fetch_history_data(symbol):
     symbol = str(symbol).strip()
     try:
         # 5 或 1 开头的代码通常为 ETF/基金
         if symbol.startswith(("5", "1")):
-            df = ak.fund_etf_hist_em(
-                symbol=symbol, period="daily", adjust="qfq"
-            )
+            df = safe_fetch(ak.fund_etf_hist_em, symbol=symbol, period="daily", adjust="qfq")
         else:
-            df = ak.stock_zh_a_hist(symbol=symbol, period="daily", adjust="qfq")
+            df = safe_fetch(ak.stock_zh_a_hist, symbol=symbol, period="daily", adjust="qfq")
         return df.tail(30) if df is not None and not df.empty else None
     except Exception:
         return None
 
 
-# ================= 2. 自选股诊断与信号 =================
+# ================= 2. 自选股诊断与信号 (增加默认值和重试延时) =================
 def analyze_watchlist(symbols):
+    # 确保 symbols 列表非空，否则跳过
+    if not symbols or (len(symbols) == 1 and not symbols[0]):
+        return "### 🎯 2. 自选股诊断与买卖点\n> 未配置自选股列表 (STOCK_LIST)\n"
+
     results = []
     for code in symbols:
         code = code.strip()
@@ -101,14 +119,20 @@ def analyze_watchlist(symbols):
         results.append(
             f"- **[{code}]** 现价: `{close}` | 趋势: {trend} | 量能: `{vol_status}(量比{vol_ratio})` | 信号: {signal}"
         )
+        
+        # 优化：每次个股查询后延时 0.2 秒，降低被封概率
+        time.sleep(0.2)
 
     return "### 🎯 2. 自选股诊断与买卖点\n" + "\n".join(results) + "\n"
 
 
-# ================= 3. 精选策略股票池 =================
+# ================= 3. 精选策略股票池 (增加重试) =================
 def get_stock_pool():
     try:
-        spot_df = ak.stock_zh_a_spot_em()
+        # 使用安全获取函数
+        spot_df = safe_fetch(ak.stock_zh_a_spot_em)
+        if spot_df is None:
+            return "### ⭐️ 3. 今日精选策略股票池\n> 选股失败: 数据获取为空\n"
 
         # 过滤条件: 非ST、非退市、涨幅 3%~7%、换手率 3%~10%、量比 > 1.3
         filtered = spot_df[
@@ -137,60 +161,24 @@ def get_stock_pool():
             + "\n"
         )
     except Exception as e:
-        return f"### ⭐️ 3. 今日精选策略股票池\n> 选股失败: {e}\n"
+        return f"### ⭐️ 3. 今日精选策略股票池\n> 选股失败: 网络连接异常或接口封禁\n"
 
 
-# ================= 4. 多渠道推送逻辑 =================
+# ================= 4. 推送逻辑 (精简为只显示摘要) =================
 def send_notification(title, markdown_content):
-    # 1. 写入 GitHub Actions 页面日志
-    print(f"=== {title} ===\n{markdown_content}")
+    # 1. 写入 GitHub Actions 页面摘要 (手机/网页端直接查看)
     summary_path = os.getenv("GITHUB_STEP_SUMMARY")
     if summary_path:
         with open(summary_path, "a", encoding="utf-8") as f:
             f.write(f"# {title}\n\n" + markdown_content)
-
-    # 2. PushPlus 微信推送 (可选)
-    pushplus_token = os.getenv("PUSHPLUS_TOKEN")
-    if pushplus_token:
-        try:
-            requests.post(
-                "http://www.pushplus.plus/send",
-                json={
-                    "token": pushplus_token,
-                    "title": title,
-                    "content": markdown_content,
-                    "template": "markdown",
-                },
-                timeout=10,
-            )
-        except Exception as e:
-            print(f"PushPlus 发送失败: {e}")
-
-    # 3. 邮件推送 (可选)
-    email_sender = os.getenv("EMAIL_SENDER")
-    email_password = os.getenv("EMAIL_PASSWORD")
-    email_receivers = os.getenv("EMAIL_RECEIVERS")
-
-    if email_sender and email_password and email_receivers:
-        try:
-            receivers_list = [
-                r.strip() for r in email_receivers.split(",") if r.strip()
-            ]
-            msg = MIMEText(markdown_content, "plain", "utf-8")
-            msg["Subject"] = title
-            msg["From"] = email_sender
-            msg["To"] = ", ".join(receivers_list)
-
-            with smtplib.SMTP_SSL("smtp.qq.com", 465) as server:
-                server.login(email_sender, email_password)
-                server.sendmail(email_sender, receivers_list, msg.as_string())
-            print("邮件发送成功！")
-        except Exception as e:
-            print(f"邮件发送失败: {e}")
+    else:
+        # 如果不是在 GitHub Actions 运行，输出到控制台
+        print(f"=== {title} ===\n{markdown_content}")
 
 
 # ================= 主程序入口 =================
 if __name__ == "__main__":
+    # 确保 STOCK_LIST 有默认值，避免空跑
     stock_env = os.getenv("STOCK_LIST", "510330,515310,561990")
     symbols = stock_env.split(",")
 
