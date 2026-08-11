@@ -1,3 +1,5 @@
 akshare
+baostock
+yfinance
 pandas
 requests
