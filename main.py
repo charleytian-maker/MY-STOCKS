@@ -1,4 +1,4 @@
-mport os
+import os
 import time
 import baostock as bs
 import pandas as pd
